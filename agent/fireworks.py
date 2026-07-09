@@ -103,7 +103,11 @@ class FireworksClient:
                         await asyncio.sleep(wait)
                         continue
                     if resp.status_code == 404:
-                        logger.warning("Model unavailable: %s", model)
+                        body = resp.text[:300]
+                        last_error = FireworksError(
+                            f"{model} HTTP 404 (not on serverless / wrong id): {body}"
+                        )
+                        logger.warning("%s", last_error)
                         break
                     if resp.status_code >= 400:
                         body = resp.text[:500]
@@ -111,9 +115,10 @@ class FireworksClient:
                         if expect_json and "response_format" in body.lower():
                             expect_json = False
                             continue
-                        raise FireworksError(
+                        last_error = FireworksError(
                             f"{model} HTTP {resp.status_code}: {body}"
                         )
+                        raise last_error
                     data = resp.json()
                     content = data["choices"][0]["message"]["content"]
                     if isinstance(content, list):

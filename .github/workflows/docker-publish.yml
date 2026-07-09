@@ -39,5 +39,5 @@ jobs:
             ${{ env.IMAGE }}:${{ github.sha }}
           build-args: |
             FIREWORKS_API_KEY=${{ secrets.FIREWORKS_API_KEY }}
-            FIREWORKS_VLM_MODEL=accounts/fireworks/models/qwen2p5-vl-32b-instruct
-            FIREWORKS_LLM_MODEL=accounts/fireworks/models/llama-v3p3-70b-instruct
+            FIREWORKS_VLM_MODEL=accounts/fireworks/models/kimi-k2p6
+            FIREWORKS_LLM_MODEL=accounts/fireworks/models/qwen3p7-plus

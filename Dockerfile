@@ -12,8 +12,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Prefer runtime -e FIREWORKS_API_KEY when possible.
 ARG FIREWORKS_API_KEY=""
 ARG FIREWORKS_BASE_URL="https://api.fireworks.ai/inference/v1"
-ARG FIREWORKS_VLM_MODEL="accounts/fireworks/models/qwen2p5-vl-32b-instruct"
-ARG FIREWORKS_LLM_MODEL="accounts/fireworks/models/llama-v3p3-70b-instruct"
+ARG FIREWORKS_VLM_MODEL="accounts/fireworks/models/kimi-k2p6"
+ARG FIREWORKS_LLM_MODEL="accounts/fireworks/models/qwen3p7-plus"
 ENV FIREWORKS_API_KEY=${FIREWORKS_API_KEY} \
     FIREWORKS_BASE_URL=${FIREWORKS_BASE_URL} \
     FIREWORKS_VLM_MODEL=${FIREWORKS_VLM_MODEL} \

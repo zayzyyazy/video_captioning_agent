@@ -102,8 +102,8 @@ Exit code `0` on full success, non-zero if any task fails.
 | --- | --- | --- |
 | `FIREWORKS_API_KEY` | _(required)_ | Fireworks credential |
 | `FIREWORKS_BASE_URL` | `https://api.fireworks.ai/inference/v1` | API base |
-| `FIREWORKS_VLM_MODEL` | `accounts/fireworks/models/qwen2p5-vl-32b-instruct` | Vision model |
-| `FIREWORKS_LLM_MODEL` | `accounts/fireworks/models/llama-v3p3-70b-instruct` | Caption model |
+| `FIREWORKS_VLM_MODEL` | `accounts/fireworks/models/kimi-k2p6` | Vision model (serverless) |
+| `FIREWORKS_LLM_MODEL` | `accounts/fireworks/models/qwen3p7-plus` | Caption model (serverless) |
 | `MAX_FRAMES` | `16` | Frame sample cap |
 | `MAX_PARALLEL_TASKS` | `3` | Concurrent clips |
 

@@ -20,13 +20,13 @@ FIREWORKS_BASE_URL = _env(
 ).rstrip("/")
 
 # Vision model used to turn sampled frames into grounded observations.
-# Prefer serverless VLMs that accept multiple images without a dedicated deployment.
+# Use current Fireworks *serverless* VLMs (older qwen2p5-vl-* IDs now 404).
 FIREWORKS_VLM_MODEL = _env(
-    "FIREWORKS_VLM_MODEL", "accounts/fireworks/models/qwen2p5-vl-32b-instruct"
+    "FIREWORKS_VLM_MODEL", "accounts/fireworks/models/kimi-k2p6"
 )
-# Text model used to rewrite observations into the four required styles.
+# Text/style model. Multimodal serverless models also work well for caption rewrite.
 FIREWORKS_LLM_MODEL = _env(
-    "FIREWORKS_LLM_MODEL", "accounts/fireworks/models/llama-v3p3-70b-instruct"
+    "FIREWORKS_LLM_MODEL", "accounts/fireworks/models/qwen3p7-plus"
 )
 
 # Fallback chain if the primary model is unavailable / rate-limited.
@@ -36,11 +36,11 @@ VLM_FALLBACKS = [
         "FIREWORKS_VLM_FALLBACKS",
         ",".join(
             [
-                "accounts/fireworks/models/qwen2p5-vl-32b-instruct",
-                "accounts/fireworks/models/qwen2p5-vl-72b-instruct",
-                "accounts/fireworks/models/llama4-maverick-instruct-basic",
-                "accounts/fireworks/models/qwen2p5-vl-7b-instruct",
-                "accounts/fireworks/models/llama-v3p2-11b-vision-instruct",
+                "accounts/fireworks/models/kimi-k2p6",
+                "accounts/fireworks/models/qwen3p7-plus",
+                "accounts/fireworks/models/minimax-m3",
+                "accounts/fireworks/models/kimi-k2p7-code",
+                "accounts/fireworks/models/kimi-k2p5",
             ]
         ),
     ).split(",")
@@ -53,11 +53,11 @@ LLM_FALLBACKS = [
         "FIREWORKS_LLM_FALLBACKS",
         ",".join(
             [
-                "accounts/fireworks/models/llama-v3p3-70b-instruct",
-                "accounts/fireworks/models/deepseek-v3p1",
-                "accounts/fireworks/models/qwen3-235b-a22b",
-                "accounts/fireworks/models/llama4-maverick-instruct-basic",
-                "accounts/fireworks/models/mixtral-8x22b-instruct",
+                "accounts/fireworks/models/qwen3p7-plus",
+                "accounts/fireworks/models/kimi-k2p6",
+                "accounts/fireworks/models/minimax-m3",
+                "accounts/fireworks/models/glm-5p2",
+                "accounts/fireworks/models/deepseek-v3p2",
             ]
         ),
     ).split(",")
