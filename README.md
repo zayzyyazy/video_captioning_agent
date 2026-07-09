@@ -49,7 +49,21 @@ python -m agent.main
 
 ## Docker
 
-### Build (bake key for submission)
+### 1) Add your Fireworks key (required for Track 2)
+
+Track 2 does not inject credentials. Put your key in GitHub Actions secrets as
+`FIREWORKS_API_KEY`, **or** bake it locally:
+
+```bash
+export FIREWORKS_API_KEY=fw_...
+```
+
+### 2) Build & push a public image
+
+Preferred (CI): merge this branch / run workflow **Build and push Docker image**,
+then set the GHCR package visibility to **Public**.
+
+Local:
 
 ```bash
 docker buildx build --platform linux/amd64 \
@@ -58,7 +72,7 @@ docker buildx build --platform linux/amd64 \
   --push .
 ```
 
-### Run like the evaluation harness
+### 3) Run like the evaluation harness
 
 ```bash
 mkdir -p input output
