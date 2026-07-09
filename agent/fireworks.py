@@ -29,8 +29,16 @@ def _unique(models: list[str]) -> list[str]:
     return out
 
 
+def _strip_thinking(text: str) -> str:
+    """Remove reasoning / think blocks that some Fireworks models emit."""
+    text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<thinking>[\s\S]*?</thinking>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<reason>[\s\S]*?</reason>", "", text, flags=re.IGNORECASE)
+    return text.strip()
+
+
 def _extract_json(text: str) -> Any:
-    text = text.strip()
+    text = _strip_thinking(text)
     if text.startswith("```"):
         lines = text.splitlines()
         if lines and lines[0].startswith("```"):
@@ -42,10 +50,51 @@ def _extract_json(text: str) -> Any:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        match = re.search(r"\{[\s\S]*\}", text)
-        if not match:
+        # Prefer the last JSON object in the string (after any preamble).
+        matches = list(re.finditer(r"\{[\s\S]*\}", text))
+        if not matches:
             raise
-        return json.loads(match.group(0))
+        last_error: Exception | None = None
+        for match in reversed(matches):
+            candidate = match.group(0)
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError as exc:
+                last_error = exc
+                # Try a tighter object around "captions"
+                cap = re.search(r'\{\s*"captions"\s*:\s*\{[\s\S]*?\}\s*\}', candidate)
+                if cap:
+                    try:
+                        return json.loads(cap.group(0))
+                    except json.JSONDecodeError as exc2:
+                        last_error = exc2
+        if last_error:
+            raise last_error
+        raise
+
+
+def _message_text(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                if part.get("type") in ("text", "output_text") and part.get("text"):
+                    parts.append(str(part["text"]))
+                elif "text" in part:
+                    parts.append(str(part["text"]))
+            else:
+                parts.append(str(part))
+        content = "".join(parts)
+    text = (content or "").strip()
+    if not text:
+        # Some reasoning models put the final answer elsewhere.
+        for key in ("reasoning_content", "reasoning"):
+            alt = message.get(key)
+            if isinstance(alt, str) and alt.strip():
+                text = alt.strip()
+                break
+    return text
 
 
 class FireworksClient:
@@ -77,9 +126,12 @@ class FireworksClient:
         temperature: float = 0.2,
         max_tokens: int = 1200,
         expect_json: bool = False,
+        disable_reasoning: bool = True,
     ) -> str:
         last_error: Exception | None = None
         for model in _unique(models):
+            use_json_format = expect_json
+            use_reasoning_none = disable_reasoning
             for attempt in range(1, 4):
                 payload: dict[str, Any] = {
                     "model": model,
@@ -87,8 +139,11 @@ class FireworksClient:
                     "temperature": temperature,
                     "max_tokens": max_tokens,
                 }
-                if expect_json:
+                if use_json_format:
                     payload["response_format"] = {"type": "json_object"}
+                if use_reasoning_none:
+                    # Disable thinking traces on Qwen/Kimi-style Fireworks models.
+                    payload["reasoning_effort"] = "none"
                 try:
                     resp = await self._client.post("/chat/completions", json=payload)
                     if resp.status_code in (429, 500, 502, 503, 504):
@@ -111,22 +166,24 @@ class FireworksClient:
                         break
                     if resp.status_code >= 400:
                         body = resp.text[:500]
-                        # Some models reject response_format; retry without it.
-                        if expect_json and "response_format" in body.lower():
-                            expect_json = False
+                        lower = body.lower()
+                        # Drop unsupported request fields and retry.
+                        if use_json_format and "response_format" in lower:
+                            use_json_format = False
+                            continue
+                        if use_reasoning_none and (
+                            "reasoning_effort" in lower or "reasoning" in lower
+                        ):
+                            use_reasoning_none = False
                             continue
                         last_error = FireworksError(
                             f"{model} HTTP {resp.status_code}: {body}"
                         )
                         raise last_error
                     data = resp.json()
-                    content = data["choices"][0]["message"]["content"]
-                    if isinstance(content, list):
-                        content = "".join(
-                            part.get("text", "") if isinstance(part, dict) else str(part)
-                            for part in content
-                        )
-                    text = (content or "").strip()
+                    message = data["choices"][0]["message"]
+                    text = _message_text(message)
+                    text = _strip_thinking(text)
                     if not text:
                         raise FireworksError(f"{model} returned empty content")
                     logger.info("Fireworks success via %s", model)
@@ -157,6 +214,7 @@ class FireworksClient:
             temperature=temperature,
             max_tokens=max_tokens,
             expect_json=True,
+            disable_reasoning=True,
         )
         data = _extract_json(text)
         if not isinstance(data, dict):

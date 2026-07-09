@@ -11,6 +11,11 @@ from agent.fireworks import FireworksClient, FireworksError
 
 logger = logging.getLogger(__name__)
 
+_PLACEHOLDER_RE = re.compile(
+    r"^(?:\.\.\.|…|caption here|todo|tbd|n/?a|none|null|-)?$",
+    re.IGNORECASE,
+)
+
 
 def _clean(text: str) -> str:
     text = text.replace("—", " - ").replace("–", "-")
@@ -21,6 +26,25 @@ def _clean(text: str) -> str:
 
 def _normalize_key(key: str) -> str:
     return re.sub(r"[^a-z0-9]", "", key.lower())
+
+
+def _is_placeholder(value: str) -> bool:
+    v = value.strip()
+    if len(v) < 12:
+        return True
+    if _PLACEHOLDER_RE.match(v):
+        return True
+    if v in {"...", "…"}:
+        return True
+    # Reject captions that are just the sample examples from the prompt.
+    sample_bits = (
+        "orange kitten sits among green garden foliage",
+        "kitten on leaf patrol",
+        "process kitten.exe",
+        "tiny orange floof",
+    )
+    low = v.lower()
+    return any(bit in low for bit in sample_bits)
 
 
 def _pick_captions(data: dict[str, Any], styles: list[str]) -> dict[str, str]:
@@ -38,8 +62,10 @@ def _pick_captions(data: dict[str, Any], styles: list[str]) -> dict[str, str]:
                 if key in nk or nk in key:
                     value = nv
                     break
-        if value:
+        if value and not _is_placeholder(value):
             out[style] = value
+        elif value:
+            logger.warning("Rejecting placeholder caption for %s: %r", style, value)
     return out
 
 
@@ -75,6 +101,7 @@ async def observe_video(
         temperature=0.1,
         max_tokens=900,
         expect_json=False,
+        disable_reasoning=True,
     )
     return _clean(text)
 
@@ -93,7 +120,7 @@ async def generate_style_captions(
         observations=observations,
         styles=", ".join(styles),
         style_block=prompts.style_block(styles),
-        style_json_keys=prompts.style_json_keys(styles),
+        example_json=prompts.example_json(styles),
     )
     messages = [
         {"role": "system", "content": prompts.CAPTION_SYSTEM},
@@ -107,7 +134,7 @@ async def generate_style_captions(
             messages=messages,
             models=models,
             temperature=0.55,
-            max_tokens=1000,
+            max_tokens=1200,
         )
         captions = _pick_captions(data, styles)
     except Exception as exc:
@@ -122,7 +149,7 @@ async def generate_style_captions(
                 observations=observations,
                 styles=style,
                 style_block=prompts.style_block([style]),
-                style_json_keys=prompts.style_json_keys([style]),
+                example_json=prompts.example_json([style]),
             )
             try:
                 data = await client.chat_json(
@@ -132,7 +159,7 @@ async def generate_style_captions(
                     ],
                     models=models + config.VLM_FALLBACKS,
                     temperature=0.5,
-                    max_tokens=400,
+                    max_tokens=500,
                 )
                 got = _pick_captions(data, [style])
                 if got.get(style):
@@ -142,7 +169,7 @@ async def generate_style_captions(
 
     # Last-resort grounded fallback so we never omit a requested style.
     for style in styles:
-        if not captions.get(style):
+        if not captions.get(style) or _is_placeholder(captions[style]):
             captions[style] = _fallback_caption(style, observations)
 
     return {s: captions[s] for s in styles}
@@ -153,10 +180,10 @@ def _fallback_caption(style: str, observations: str) -> str:
     if style == "formal":
         return f"The video shows the following scene: {snippet}."
     if style == "sarcastic":
-        return f"Sure, nothing to see here — just {snippet.lower()}."
+        return f"Sure, nothing to see here - just {snippet.lower()}."
     if style == "humorous_tech":
         return (
             f"Runtime log: scene.render() succeeded with payload "
-            f"\"{snippet[:160]}\"."
+            f'"{snippet[:160]}".'
         )
     return f"Okay, picture this: {snippet}."

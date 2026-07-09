@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 OBSERVATION_SYSTEM = """You are a careful video analyst. You receive ordered still frames sampled across a video clip.
 Describe ONLY what is visibly present. Do not invent people, objects, brands, weather, or actions that are not supported by the frames.
 Be concrete about setting, subjects, clothing, objects, actions, lighting, weather, and any readable on-screen text.
@@ -23,7 +25,8 @@ Keep the brief under 250 words. Do not write captions or jokes."""
 CAPTION_SYSTEM = """You write short video captions that stay faithful to a factual observation brief.
 Never mention frames, OCR, models, AI, pipelines, timestamps, or analysis.
 Never invent details that are not in the brief.
-Output valid JSON only."""
+Never use ellipsis placeholders. Every caption must be a complete natural-language sentence.
+Return a single JSON object only. No markdown fences. No thinking aloud."""
 
 STYLE_GUIDE = {
     "formal": (
@@ -48,7 +51,7 @@ STYLE_GUIDE = {
 CAPTION_USER = """Factual observation brief:
 {observations}
 
-Write one caption (1-3 sentences) for EACH requested style.
+Write one caption (1-3 complete sentences) for EACH requested style.
 Requested styles: {styles}
 
 Style requirements:
@@ -58,8 +61,9 @@ Rules:
 1. Every caption must reflect the same real scene from the brief.
 2. If visible text is present, weave it in naturally when relevant.
 3. Keep humour lighthearted; no insults, politics, or sexual content.
-4. Return ONLY JSON of the form:
-{{"captions": {{{style_json_keys}}}}}
+4. Do NOT copy placeholders. Do NOT output "...", "caption here", or empty strings.
+5. Return ONLY a JSON object with this shape (replace each value with a real caption):
+{example_json}
 """
 
 
@@ -71,5 +75,16 @@ def style_block(styles: list[str]) -> str:
     return "\n".join(lines)
 
 
-def style_json_keys(styles: list[str]) -> str:
-    return ", ".join(f'"{s}": "..."' for s in styles)
+def example_json(styles: list[str]) -> str:
+    # Concrete sample values so the model does not copy "..."
+    samples = {
+        "formal": "An orange kitten sits among green garden foliage in daylight.",
+        "sarcastic": "Clearly the garden's most productive employee: a kitten on leaf patrol.",
+        "humorous_tech": "Process kitten.exe spawned in GardenOS with foliage shaders at max.",
+        "humorous_non_tech": "This tiny orange floof is out here living its best leafy life.",
+    }
+    captions = {
+        style: samples.get(style, f"A real {style} caption about the scene.")
+        for style in styles
+    }
+    return json.dumps({"captions": captions}, ensure_ascii=False)
