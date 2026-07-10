@@ -144,6 +144,9 @@ class FireworksClient:
                 "https://audio-prod.us-virginia-1.direct.fireworks.ai/v1",
                 "whisper-v3",
             ),
+            # Some accounts expose Whisper on the main inference host.
+            ("https://api.fireworks.ai/inference/v1", "whisper-v3-turbo"),
+            ("https://api.fireworks.ai/inference/v1", "whisper-v3"),
         ]
         seen: set[tuple[str, str]] = set()
         pairs: list[tuple[str, str]] = []
@@ -152,74 +155,96 @@ class FireworksClient:
                 seen.add(pair)
                 pairs.append(pair)
 
+        # Fireworks audio docs/examples vary between raw key and Bearer.
+        auth_headers = [
+            {"Authorization": f"Bearer {self.api_key}"},
+            {"Authorization": self.api_key},
+        ]
+
         last_error: Exception | None = None
         audio_bytes = audio_path.read_bytes()
         filename = audio_path.name or "audio.mp3"
 
         for base_url, model in pairs:
-            for attempt in range(1, 3):
-                try:
-                    files = {"file": (filename, audio_bytes, "audio/mpeg")}
-                    data = {
-                        "model": model,
-                        "response_format": "json",
-                        "temperature": "0.0",
-                    }
-                    resp = await self._audio_client.post(
-                        f"{base_url}/audio/transcriptions",
-                        data=data,
-                        files=files,
-                    )
-                    if resp.status_code in (429, 500, 502, 503, 504):
+            for auth in auth_headers:
+                for attempt in range(1, 3):
+                    try:
+                        files = {"file": (filename, audio_bytes, "audio/mpeg")}
+                        data = {
+                            "model": model,
+                            "response_format": "json",
+                            "temperature": "0.0",
+                        }
+                        resp = await self._audio_client.post(
+                            f"{base_url}/audio/transcriptions",
+                            data=data,
+                            files=files,
+                            headers=auth,
+                        )
+                        if resp.status_code in (429, 500, 502, 503, 504):
+                            wait = min(2 ** attempt, 12)
+                            logger.warning(
+                                "Whisper %s returned %s; retry in %ss",
+                                model,
+                                resp.status_code,
+                                wait,
+                            )
+                            await asyncio.sleep(wait)
+                            continue
+                        if resp.status_code in (401, 403):
+                            last_error = FireworksError(
+                                f"Whisper {model} HTTP {resp.status_code}: {resp.text[:200]}"
+                            )
+                            # Try next auth style / endpoint.
+                            break
+                        if resp.status_code == 404:
+                            logger.warning(
+                                "Whisper unavailable at %s model=%s", base_url, model
+                            )
+                            break
+                        if resp.status_code >= 400:
+                            body = resp.text[:400]
+                            last_error = FireworksError(
+                                f"Whisper {model} HTTP {resp.status_code}: {body}"
+                            )
+                            logger.warning("%s", last_error)
+                            break
+
+                        payload = resp.json()
+                        if isinstance(payload, dict):
+                            text = str(payload.get("text") or "").strip()
+                        else:
+                            text = str(payload).strip()
+                        text = re.sub(r"\s+", " ", text).strip()
+                        if text:
+                            logger.info(
+                                "Whisper success via %s (%d chars)", model, len(text)
+                            )
+                            if len(text) > config.MAX_TRANSCRIPT_CHARS:
+                                text = (
+                                    text[: config.MAX_TRANSCRIPT_CHARS].rstrip() + "…"
+                                )
+                            return text
+                        logger.info(
+                            "Whisper %s returned empty transcript (likely no speech)",
+                            model,
+                        )
+                        return ""
+                    except (httpx.HTTPError, FireworksError, ValueError, KeyError) as exc:
+                        last_error = exc
                         wait = min(2 ** attempt, 12)
                         logger.warning(
-                            "Whisper %s returned %s; retry in %ss",
+                            "Whisper call failed (%s, attempt %s): %s",
                             model,
-                            resp.status_code,
-                            wait,
+                            attempt,
+                            exc,
                         )
                         await asyncio.sleep(wait)
-                        continue
-                    if resp.status_code == 404:
-                        logger.warning(
-                            "Whisper unavailable at %s model=%s", base_url, model
-                        )
-                        break
-                    if resp.status_code >= 400:
-                        body = resp.text[:400]
-                        last_error = FireworksError(
-                            f"Whisper {model} HTTP {resp.status_code}: {body}"
-                        )
-                        logger.warning("%s", last_error)
-                        break
 
-                    payload = resp.json()
-                    if isinstance(payload, dict):
-                        text = str(payload.get("text") or "").strip()
-                    else:
-                        text = str(payload).strip()
-                    text = re.sub(r"\s+", " ", text).strip()
-                    if text:
-                        logger.info(
-                            "Whisper success via %s (%d chars)", model, len(text)
-                        )
-                        if len(text) > config.MAX_TRANSCRIPT_CHARS:
-                            text = text[: config.MAX_TRANSCRIPT_CHARS].rstrip() + "…"
-                        return text
-                    logger.info("Whisper %s returned empty transcript (likely no speech)", model)
-                    return ""
-                except (httpx.HTTPError, FireworksError, ValueError, KeyError) as exc:
-                    last_error = exc
-                    wait = min(2 ** attempt, 12)
-                    logger.warning(
-                        "Whisper call failed (%s, attempt %s): %s",
-                        model,
-                        attempt,
-                        exc,
-                    )
-                    await asyncio.sleep(wait)
-
-        logger.warning("Transcription unavailable after retries: %s", last_error)
+        logger.warning(
+            "Transcription unavailable (vision captions still run). Last error: %s",
+            last_error,
+        )
         return ""
 
     async def chat(

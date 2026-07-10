@@ -26,6 +26,7 @@ class PreparedMedia:
     frames: list[tuple[float, str]]
     audio_path: Path | None
     has_audio: bool
+    work_dir: Path | None = None
 
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
@@ -157,11 +158,12 @@ async def download_video(url: str, dest: Path) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     timeout = httpx.Timeout(config.DOWNLOAD_TIMEOUT, connect=30.0)
     max_bytes = int(config.MAX_DOWNLOAD_MB * 1024 * 1024)
+    tmp_dest = dest.with_suffix(dest.suffix + ".partial")
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
         async with client.stream("GET", url) as resp:
             resp.raise_for_status()
             total = 0
-            with open(dest, "wb") as f:
+            with open(tmp_dest, "wb") as f:
                 async for chunk in resp.aiter_bytes():
                     total += len(chunk)
                     if total > max_bytes:
@@ -169,8 +171,16 @@ async def download_video(url: str, dest: Path) -> Path:
                             f"Download exceeded {config.MAX_DOWNLOAD_MB} MB limit"
                         )
                     f.write(chunk)
+    tmp_dest.replace(dest)
     logger.info("Downloaded %s (%.1f MB)", dest.name, dest.stat().st_size / (1024 * 1024))
     return dest
+
+
+def work_dir_for(task_id: str, unique_key: str) -> Path:
+    """Unique scratch dir so duplicate task_ids never collide under concurrency."""
+    safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in task_id)[:64]
+    safe_key = "".join(c if c.isalnum() or c in "-_" else "_" for c in unique_key)[:80]
+    return config.TEMP_DIR / f"{safe_id}__{safe_key}"
 
 
 def _fit_frames_under_budget(
@@ -199,9 +209,12 @@ def _fit_frames_under_budget(
     return selected
 
 
-async def prepare_media(task_id: str, video_url: str) -> PreparedMedia:
+async def prepare_media(
+    task_id: str, video_url: str, *, unique_key: str | None = None
+) -> PreparedMedia:
     """Download video, sample frames, and optionally extract audio for Whisper."""
-    work = config.TEMP_DIR / task_id
+    key = unique_key or task_id
+    work = work_dir_for(task_id, key)
     if work.exists():
         shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True, exist_ok=True)
@@ -248,6 +261,7 @@ async def prepare_media(task_id: str, video_url: str) -> PreparedMedia:
         frames=frames,
         audio_path=audio_path,
         has_audio=has_audio,
+        work_dir=work,
     )
 
 
@@ -259,6 +273,16 @@ async def prepare_frames(
     return media.duration, media.frames
 
 
+def cleanup_work(work_dir: Path | None) -> None:
+    if work_dir is None:
+        return
+    shutil.rmtree(work_dir, ignore_errors=True)
+
+
 def cleanup_task(task_id: str) -> None:
-    work = config.TEMP_DIR / task_id
-    shutil.rmtree(work, ignore_errors=True)
+    # Legacy helper: remove any dirs that start with the task id prefix.
+    root = config.TEMP_DIR
+    if not root.exists():
+        return
+    for path in root.glob(f"{task_id}*"):
+        shutil.rmtree(path, ignore_errors=True)

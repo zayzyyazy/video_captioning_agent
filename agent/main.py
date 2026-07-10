@@ -13,7 +13,9 @@ from typing import Any
 from agent import config
 from agent.captioner import generate_style_captions, observe_video
 from agent.fireworks import FireworksClient
-from agent.video import cleanup_task, prepare_media
+from agent.video import cleanup_work, prepare_media
+import hashlib
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,7 +42,9 @@ def write_results(path: Path, results: list[dict[str, Any]]) -> None:
     logger.info("Wrote %d results to %s", len(results), path)
 
 
-async def process_task(client: FireworksClient, task: dict[str, Any]) -> dict[str, Any]:
+async def process_task(
+    client: FireworksClient, task: dict[str, Any], *, index: int = 0
+) -> dict[str, Any]:
     task_id = str(task.get("task_id") or task.get("id") or "").strip()
     video_url = str(task.get("video_url") or "").strip()
     styles = task.get("styles") or list(config.ALL_STYLES)
@@ -51,9 +55,13 @@ async def process_task(client: FireworksClient, task: dict[str, Any]) -> dict[st
     if not task_id or not video_url:
         raise ValueError(f"Invalid task payload: {task}")
 
+    # Unique scratch key so duplicate task_ids (e.g. two "v3") never collide.
+    unique_key = f"{index}_{hashlib.sha1(video_url.encode()).hexdigest()[:10]}"
+    work_dir = None
     logger.info("Processing task %s (%s)", task_id, video_url)
     try:
-        media = await prepare_media(task_id, video_url)
+        media = await prepare_media(task_id, video_url, unique_key=unique_key)
+        work_dir = media.work_dir
         transcript = ""
         if media.audio_path is not None:
             transcript = await client.transcribe(media.audio_path)
@@ -86,7 +94,7 @@ async def process_task(client: FireworksClient, task: dict[str, Any]) -> dict[st
             captions.setdefault(style, f"A video scene described in {style} style.")
         return {"task_id": task_id, "captions": captions}
     finally:
-        cleanup_task(task_id)
+        cleanup_work(work_dir)
 
 
 async def async_main() -> int:
@@ -125,7 +133,7 @@ async def async_main() -> int:
     async def _run(idx: int, task: dict[str, Any]) -> None:
         async with sem:
             try:
-                results[idx] = await process_task(client, task)
+                results[idx] = await process_task(client, task, index=idx)
             except Exception as exc:
                 tid = task.get("task_id", idx)
                 msg = f"Task {tid} failed: {exc}"
