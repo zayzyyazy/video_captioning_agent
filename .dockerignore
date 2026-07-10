@@ -1,0 +1,13 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+*.pyo
+sample_output
+temp
+*.mp4
+*.md
+.env
+.env.*
+!/.env.example
