@@ -1,4 +1,4 @@
-"""Fireworks OpenAI-compatible chat client with retries and model fallbacks."""
+"""Fireworks OpenAI-compatible chat + Whisper transcription client."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -114,9 +115,112 @@ class FireworksClient:
             },
             timeout=httpx.Timeout(config.REQUEST_TIMEOUT, connect=30.0),
         )
+        # Separate client for Whisper (different host, multipart uploads).
+        self._audio_client = httpx.AsyncClient(
+            base_url=config.FIREWORKS_AUDIO_BASE_URL,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            timeout=httpx.Timeout(config.TRANSCRIBE_TIMEOUT, connect=30.0),
+        )
 
     async def aclose(self) -> None:
         await self._client.aclose()
+        await self._audio_client.aclose()
+
+    async def transcribe(self, audio_path: Path) -> str:
+        """Transcribe audio with Fireworks Whisper. Returns empty string on soft failure."""
+        if not config.ENABLE_TRANSCRIPTION:
+            return ""
+        if not audio_path or not audio_path.exists():
+            return ""
+
+        # (base_url, model) pairs — turbo first for speed, prod as fallback.
+        endpoints: list[tuple[str, str]] = [
+            (config.FIREWORKS_AUDIO_BASE_URL, config.FIREWORKS_WHISPER_MODEL),
+            (
+                "https://audio-turbo.us-virginia-1.direct.fireworks.ai/v1",
+                "whisper-v3-turbo",
+            ),
+            (
+                "https://audio-prod.us-virginia-1.direct.fireworks.ai/v1",
+                "whisper-v3",
+            ),
+        ]
+        seen: set[tuple[str, str]] = set()
+        pairs: list[tuple[str, str]] = []
+        for pair in endpoints:
+            if pair not in seen:
+                seen.add(pair)
+                pairs.append(pair)
+
+        last_error: Exception | None = None
+        audio_bytes = audio_path.read_bytes()
+        filename = audio_path.name or "audio.mp3"
+
+        for base_url, model in pairs:
+            for attempt in range(1, 3):
+                try:
+                    files = {"file": (filename, audio_bytes, "audio/mpeg")}
+                    data = {
+                        "model": model,
+                        "response_format": "json",
+                        "temperature": "0.0",
+                    }
+                    resp = await self._audio_client.post(
+                        f"{base_url}/audio/transcriptions",
+                        data=data,
+                        files=files,
+                    )
+                    if resp.status_code in (429, 500, 502, 503, 504):
+                        wait = min(2 ** attempt, 12)
+                        logger.warning(
+                            "Whisper %s returned %s; retry in %ss",
+                            model,
+                            resp.status_code,
+                            wait,
+                        )
+                        await asyncio.sleep(wait)
+                        continue
+                    if resp.status_code == 404:
+                        logger.warning(
+                            "Whisper unavailable at %s model=%s", base_url, model
+                        )
+                        break
+                    if resp.status_code >= 400:
+                        body = resp.text[:400]
+                        last_error = FireworksError(
+                            f"Whisper {model} HTTP {resp.status_code}: {body}"
+                        )
+                        logger.warning("%s", last_error)
+                        break
+
+                    payload = resp.json()
+                    if isinstance(payload, dict):
+                        text = str(payload.get("text") or "").strip()
+                    else:
+                        text = str(payload).strip()
+                    text = re.sub(r"\s+", " ", text).strip()
+                    if text:
+                        logger.info(
+                            "Whisper success via %s (%d chars)", model, len(text)
+                        )
+                        if len(text) > config.MAX_TRANSCRIPT_CHARS:
+                            text = text[: config.MAX_TRANSCRIPT_CHARS].rstrip() + "…"
+                        return text
+                    logger.info("Whisper %s returned empty transcript (likely no speech)", model)
+                    return ""
+                except (httpx.HTTPError, FireworksError, ValueError, KeyError) as exc:
+                    last_error = exc
+                    wait = min(2 ** attempt, 12)
+                    logger.warning(
+                        "Whisper call failed (%s, attempt %s): %s",
+                        model,
+                        attempt,
+                        exc,
+                    )
+                    await asyncio.sleep(wait)
+
+        logger.warning("Transcription unavailable after retries: %s", last_error)
+        return ""
 
     async def chat(
         self,

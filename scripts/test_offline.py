@@ -81,6 +81,21 @@ def test_fallback() -> None:
         assert not _is_placeholder(cap)
 
 
+def test_format_transcript() -> None:
+    from agent.prompts import format_transcript
+
+    assert "No speech" in format_transcript("")
+    assert format_transcript("hello world") == "hello world"
+
+
+def test_context_block() -> None:
+    from agent.captioner import _context_block
+
+    merged = _context_block("SETTING: office.", "Please submit the report.")
+    assert "office" in merged
+    assert "report" in merged
+
+
 if __name__ == "__main__":
     test_timestamps()
     test_json_extract()
@@ -88,4 +103,6 @@ if __name__ == "__main__":
     test_reject_placeholders()
     test_example_json()
     test_fallback()
+    test_format_transcript()
+    test_context_block()
     print("all unit tests passed")

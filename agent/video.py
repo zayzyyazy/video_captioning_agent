@@ -1,4 +1,4 @@
-"""Video download, metadata, and frame sampling via ffmpeg/ffprobe."""
+"""Video download, metadata, frame sampling, and audio extraction via ffmpeg."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import logging
 import math
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
@@ -19,17 +20,26 @@ from agent import config
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class PreparedMedia:
+    duration: float
+    frames: list[tuple[float, str]]
+    audio_path: Path | None
+    has_audio: bool
+
+
 def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True, check=False)
 
 
-def probe_duration(video_path: Path) -> float:
+def probe_media(video_path: Path) -> tuple[float, bool]:
+    """Return (duration_seconds, has_audio_stream)."""
     cmd = [
         "ffprobe",
         "-v",
         "error",
         "-show_entries",
-        "format=duration",
+        "format=duration:stream=codec_type",
         "-of",
         "json",
         str(video_path),
@@ -41,7 +51,10 @@ def probe_duration(video_path: Path) -> float:
     duration = float(data.get("format", {}).get("duration") or 0.0)
     if duration <= 0:
         raise RuntimeError("Could not determine video duration")
-    return duration
+    has_audio = any(
+        stream.get("codec_type") == "audio" for stream in data.get("streams", [])
+    )
+    return duration, has_audio
 
 
 def choose_timestamps(duration: float, max_frames: int) -> list[float]:
@@ -78,7 +91,47 @@ def extract_frame_jpeg(video_path: Path, timestamp: float, out_path: Path, width
     ]
     result = _run(cmd)
     if result.returncode != 0 or not out_path.exists() or out_path.stat().st_size == 0:
-        raise RuntimeError(f"ffmpeg frame extract failed at {timestamp:.2f}s: {result.stderr[-400:]}")
+        raise RuntimeError(
+            f"ffmpeg frame extract failed at {timestamp:.2f}s: {result.stderr[-400:]}"
+        )
+    return out_path
+
+
+def extract_audio_mp3(video_path: Path, out_path: Path) -> Path | None:
+    """Extract mono 16kHz MP3 for Whisper. Returns None if extraction fails/empty."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(video_path),
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-c:a",
+        "libmp3lame",
+        "-q:a",
+        "4",
+        str(out_path),
+    ]
+    result = _run(cmd)
+    if result.returncode != 0 or not out_path.exists() or out_path.stat().st_size < 256:
+        logger.warning(
+            "Audio extraction failed or empty: %s",
+            (result.stderr or "")[-300:],
+        )
+        try:
+            out_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+    logger.info(
+        "Extracted audio %s (%.1f KB)",
+        out_path.name,
+        out_path.stat().st_size / 1024.0,
+    )
     return out_path
 
 
@@ -88,7 +141,10 @@ def jpeg_to_data_url(path: Path, max_side: int = 768, quality: int = 85) -> str:
         w, h = img.size
         scale = min(1.0, max_side / float(max(w, h)))
         if scale < 1.0:
-            img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.Resampling.LANCZOS)
+            img = img.resize(
+                (max(1, int(w * scale)), max(1, int(h * scale))),
+                Image.Resampling.LANCZOS,
+            )
         from io import BytesIO
 
         buf = BytesIO()
@@ -130,11 +186,9 @@ def _fit_frames_under_budget(
 
     selected = list(frames)
     while len(selected) > 4 and total_size(selected) > budget_bytes:
-        # Remove a middle frame to preserve start/end coverage.
         mid = len(selected) // 2
         selected.pop(mid)
     if total_size(selected) > budget_bytes and len(selected) > 2:
-        # Last resort: keep endpoints + one midpoint.
         mid = len(frames) // 2
         selected = [frames[0], frames[mid], frames[-1]]
     logger.info(
@@ -145,8 +199,8 @@ def _fit_frames_under_budget(
     return selected
 
 
-async def prepare_frames(task_id: str, video_url: str) -> tuple[float, list[tuple[float, str]]]:
-    """Download video and return (duration, [(timestamp, data_url), ...])."""
+async def prepare_media(task_id: str, video_url: str) -> PreparedMedia:
+    """Download video, sample frames, and optionally extract audio for Whisper."""
     work = config.TEMP_DIR / task_id
     if work.exists():
         shutil.rmtree(work, ignore_errors=True)
@@ -155,14 +209,20 @@ async def prepare_frames(task_id: str, video_url: str) -> tuple[float, list[tupl
     video_path = work / "clip.mp4"
     await download_video(video_url, video_path)
 
-    duration = await asyncio.to_thread(probe_duration, video_path)
+    duration, has_audio = await asyncio.to_thread(probe_media, video_path)
     timestamps = choose_timestamps(duration, config.MAX_FRAMES)
     logger.info(
-        "Task %s: duration=%.1fs sampling %d frames",
+        "Task %s: duration=%.1fs has_audio=%s sampling %d frames",
         task_id,
         duration,
+        has_audio,
         len(timestamps),
     )
+
+    audio_path: Path | None = None
+    if has_audio and config.ENABLE_TRANSCRIPTION:
+        candidate = work / "audio.mp3"
+        audio_path = await asyncio.to_thread(extract_audio_mp3, video_path, candidate)
 
     frames: list[tuple[float, str]] = []
     for idx, ts in enumerate(timestamps):
@@ -170,18 +230,33 @@ async def prepare_frames(task_id: str, video_url: str) -> tuple[float, list[tupl
         await asyncio.to_thread(
             extract_frame_jpeg, video_path, ts, frame_path, config.FRAME_WIDTH
         )
-        data_url = await asyncio.to_thread(jpeg_to_data_url, frame_path, config.FRAME_WIDTH)
+        data_url = await asyncio.to_thread(
+            jpeg_to_data_url, frame_path, config.FRAME_WIDTH
+        )
         frames.append((ts, data_url))
 
     frames = _fit_frames_under_budget(frames)
 
-    # Free the large video file; keep frames until task completes.
+    # Free the large video file; keep frames + audio until task completes.
     try:
         video_path.unlink(missing_ok=True)
     except OSError:
         pass
 
-    return duration, frames
+    return PreparedMedia(
+        duration=duration,
+        frames=frames,
+        audio_path=audio_path,
+        has_audio=has_audio,
+    )
+
+
+# Back-compat alias used by older smoke scripts.
+async def prepare_frames(
+    task_id: str, video_url: str
+) -> tuple[float, list[tuple[float, str]]]:
+    media = await prepare_media(task_id, video_url)
+    return media.duration, media.frames
 
 
 def cleanup_task(task_id: str) -> None:

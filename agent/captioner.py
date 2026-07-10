@@ -69,17 +69,28 @@ def _pick_captions(data: dict[str, Any], styles: list[str]) -> dict[str, str]:
     return out
 
 
+def _context_block(observations: str, transcript: str | None) -> str:
+    """Merge visual observations + transcript for captioning / fallbacks."""
+    obs = _clean(observations)
+    tx = (transcript or "").strip()
+    if tx:
+        return f"{obs} SPEECH/TRANSCRIPT: {tx}"
+    return obs
+
+
 async def observe_video(
     client: FireworksClient,
     *,
     duration: float,
     frames: list[tuple[float, str]],
+    transcript: str | None = None,
 ) -> str:
     content: list[dict[str, Any]] = [
         {
             "type": "text",
             "text": prompts.OBSERVATION_USER.format(
-                duration_hint=f"about {duration:.0f} seconds long"
+                duration_hint=f"about {duration:.0f} seconds long",
+                transcript=prompts.format_transcript(transcript),
             ),
         }
     ]
@@ -99,7 +110,7 @@ async def observe_video(
         messages=messages,
         models=models,
         temperature=0.1,
-        max_tokens=900,
+        max_tokens=1000,
         expect_json=False,
         disable_reasoning=True,
     )
@@ -111,13 +122,16 @@ async def generate_style_captions(
     *,
     observations: str,
     styles: list[str],
+    transcript: str | None = None,
 ) -> dict[str, str]:
     styles = [s for s in styles if s]
     if not styles:
         styles = list(config.ALL_STYLES)
 
+    transcript_text = prompts.format_transcript(transcript)
     user = prompts.CAPTION_USER.format(
         observations=observations,
+        transcript=transcript_text,
         styles=", ".join(styles),
         style_block=prompts.style_block(styles),
         example_json=prompts.example_json(styles),
@@ -128,7 +142,6 @@ async def generate_style_captions(
     ]
     models = [config.FIREWORKS_LLM_MODEL, *config.LLM_FALLBACKS]
 
-    # Prefer a text LLM; if it fails, fall back to the VLM as a text model.
     try:
         data = await client.chat_json(
             messages=messages,
@@ -143,10 +156,10 @@ async def generate_style_captions(
 
     missing = [s for s in styles if not captions.get(s)]
     if missing:
-        # One style at a time for stubborn missing keys.
         for style in missing:
             single_user = prompts.CAPTION_USER.format(
                 observations=observations,
+                transcript=transcript_text,
                 styles=style,
                 style_block=prompts.style_block([style]),
                 example_json=prompts.example_json([style]),
@@ -167,10 +180,10 @@ async def generate_style_captions(
             except Exception as exc:
                 logger.warning("Per-style caption failed for %s: %s", style, exc)
 
-    # Last-resort grounded fallback so we never omit a requested style.
+    context = _context_block(observations, transcript)
     for style in styles:
         if not captions.get(style) or _is_placeholder(captions[style]):
-            captions[style] = _fallback_caption(style, observations)
+            captions[style] = _fallback_caption(style, context)
 
     return {s: captions[s] for s in styles}
 

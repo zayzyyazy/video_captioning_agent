@@ -13,7 +13,7 @@ from typing import Any
 from agent import config
 from agent.captioner import generate_style_captions, observe_video
 from agent.fireworks import FireworksClient
-from agent.video import cleanup_task, prepare_frames
+from agent.video import cleanup_task, prepare_media
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,11 +53,33 @@ async def process_task(client: FireworksClient, task: dict[str, Any]) -> dict[st
 
     logger.info("Processing task %s (%s)", task_id, video_url)
     try:
-        duration, frames = await prepare_frames(task_id, video_url)
-        observations = await observe_video(client, duration=duration, frames=frames)
+        media = await prepare_media(task_id, video_url)
+        transcript = ""
+        if media.audio_path is not None:
+            transcript = await client.transcribe(media.audio_path)
+            if transcript:
+                logger.info(
+                    "Task %s transcript ready (%d chars)", task_id, len(transcript)
+                )
+            else:
+                logger.info("Task %s: no usable speech in audio", task_id)
+        elif media.has_audio:
+            logger.info("Task %s: audio present but extraction skipped/failed", task_id)
+        else:
+            logger.info("Task %s: no audio stream", task_id)
+
+        observations = await observe_video(
+            client,
+            duration=media.duration,
+            frames=media.frames,
+            transcript=transcript,
+        )
         logger.info("Task %s observations ready (%d chars)", task_id, len(observations))
         captions = await generate_style_captions(
-            client, observations=observations, styles=styles
+            client,
+            observations=observations,
+            styles=styles,
+            transcript=transcript,
         )
         # Ensure every requested style is present.
         for style in styles:

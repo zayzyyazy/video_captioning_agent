@@ -19,6 +19,14 @@ FIREWORKS_BASE_URL = _env(
     "FIREWORKS_BASE_URL", "https://api.fireworks.ai/inference/v1"
 ).rstrip("/")
 
+# Fireworks Whisper (OpenAI-compatible audio transcriptions API).
+FIREWORKS_AUDIO_BASE_URL = _env(
+    "FIREWORKS_AUDIO_BASE_URL",
+    "https://audio-turbo.us-virginia-1.direct.fireworks.ai/v1",
+).rstrip("/")
+FIREWORKS_WHISPER_MODEL = _env("FIREWORKS_WHISPER_MODEL", "whisper-v3-turbo")
+ENABLE_TRANSCRIPTION = _env("ENABLE_TRANSCRIPTION", "1") not in ("0", "false", "False")
+
 # Vision model used to turn sampled frames into grounded observations.
 # Use current Fireworks *serverless* VLMs (older qwen2p5-vl-* IDs now 404).
 FIREWORKS_VLM_MODEL = _env(
@@ -70,5 +78,7 @@ MAX_PARALLEL_TASKS = int(_env("MAX_PARALLEL_TASKS", "3"))
 REQUEST_TIMEOUT = float(_env("REQUEST_TIMEOUT", "120"))
 DOWNLOAD_TIMEOUT = float(_env("DOWNLOAD_TIMEOUT", "180"))
 MAX_DOWNLOAD_MB = float(_env("MAX_DOWNLOAD_MB", "500"))
+TRANSCRIBE_TIMEOUT = float(_env("TRANSCRIBE_TIMEOUT", "180"))
+MAX_TRANSCRIPT_CHARS = int(_env("MAX_TRANSCRIPT_CHARS", "4000"))
 
 ALL_STYLES = ("formal", "sarcastic", "humorous_tech", "humorous_non_tech")

@@ -12,9 +12,11 @@ Fireworks text model for captions in every requested style, and writes
 ```text
 tasks.json
   -> download mp4
-  -> ffprobe duration
+  -> ffprobe duration + audio presence
+  -> ffmpeg extract mono 16kHz audio (when present)
+  -> Fireworks Whisper transcript (whisper-v3-turbo)
   -> ffmpeg evenly spaced JPEG frames (adaptive count, capped)
-  -> Fireworks VLM observations (setting/subjects/objects/actions/text)
+  -> Fireworks VLM observations from frames + transcript
   -> Fireworks LLM styled captions (formal / sarcastic / humorous_tech / humorous_non_tech)
   -> /output/results.json
 ```
@@ -104,6 +106,9 @@ Exit code `0` on full success, non-zero if any task fails.
 | `FIREWORKS_BASE_URL` | `https://api.fireworks.ai/inference/v1` | API base |
 | `FIREWORKS_VLM_MODEL` | `accounts/fireworks/models/kimi-k2p6` | Vision model (serverless) |
 | `FIREWORKS_LLM_MODEL` | `accounts/fireworks/models/qwen3p7-plus` | Caption model (serverless) |
+| `FIREWORKS_WHISPER_MODEL` | `whisper-v3-turbo` | Audio transcription model |
+| `FIREWORKS_AUDIO_BASE_URL` | `https://audio-turbo.us-virginia-1.direct.fireworks.ai/v1` | Whisper endpoint |
+| `ENABLE_TRANSCRIPTION` | `1` | Set `0` to skip Whisper |
 | `MAX_FRAMES` | `16` | Frame sample cap |
 | `MAX_PARALLEL_TASKS` | `3` | Concurrent clips |
 
